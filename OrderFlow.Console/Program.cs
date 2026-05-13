@@ -1,59 +1,43 @@
-﻿using OrderFlow.Console.Models;
+﻿using Microsoft.EntityFrameworkCore;
+using OrderFlow.Console.Models;
+using OrderFlow.Console.Persistence;
 using OrderFlow.Console.Services;
 
-var p1 = new Product(1, "Karma dla psa", 120m, "Jedzenie");
-var p2 = new Product(2, "Smycz automatyczna", 85m, "Akcesoria");
-var p3 = new Product(3, "Drapak dla kota", 250m, "Zabawki");
-var p4 = new Product(4, "Szampon dla szczeniąt", 45m, "Higiena");
-var p5 = new Product(5, "Przysmaki dentystyczne", 15m, "Jedzenie");
+using var db = new OrderFlowContext();
 
-var c1 = new Customer(1, "Katarzyna Skibidi", true, "Gdańsk");
-var c2 = new Customer(2, "Piotr Łasy", false, "Poznań");
-var c3 = new Customer(3, "Marta Skąpa", true, "Gdańsk");
+await db.Database.MigrateAsync();
+await DatabaseSeeder.SeedAsync(db);
 
-var orders = new List<Order>
+var newOrder = new Order
 {
-    new Order(1, c1, [new OrderItem(p1, 2), new OrderItem(p5, 10)], DateTime.Now, OrderStatus.New),
-    new Order(2, c2, [new OrderItem(p2, 1)], DateTime.Now, OrderStatus.Validated),
-    new Order(3, c3, [new OrderItem(p3, 1), new OrderItem(p4, 2)], DateTime.Now, OrderStatus.Processing),
-    new Order(4, c1, [], DateTime.Now, OrderStatus.New), 
-    new Order(5, c2, [new OrderItem(p1, 50)], DateTime.Now, OrderStatus.Cancelled)
+    CustomerId = 1,
+    Status = OrderStatus.New,
+    OrderDate = DateTime.Now,
+    Items = new List<OrderItem> { new() { ProductId = 2, Quantity = 1, UnitPrice = 85m } }
 };
+db.Orders.Add(newOrder);
+await db.SaveChangesAsync();
+Console.WriteLine($"Dodano zamówienie #{newOrder.Id}");
 
-var validator = new OrderValidator();
-var rules = new List<ValidationRule> { OrderValidator.HasItems, OrderValidator.NotTooExpensive };
-var lambdas = new List<Func<Order, bool>> { o => o.Items.Count > 0 };
+Console.WriteLine("\n--- ZAPYTANIA LINQ ---");
 
-foreach (var o in orders) validator.Validate(o, rules, lambdas);
+var vipHighValue = await db.Orders
+    .Where(o => o.Customer.IsVip && o.Items.Sum(i => i.Quantity * i.UnitPrice) > 100)
+    .Select(o => new { o.Id, o.Customer.Name })
+    .ToListAsync();
 
-Console.WriteLine("\n ZADNIE 3");
+var ranking = (await db.Customers
+    .Select(c => new {
+        c.Name,
+        Total = c.Orders.SelectMany(o => o.Items).Sum(i => i.Quantity * i.UnitPrice)
+    })
+    .ToListAsync())
+    .OrderByDescending(x => x.Total)
+    .ToList();
 
-Predicate<Order> isVipOrder = o => o.Customer.IsVip;
-var vipOrders = orders.FindAll(isVipOrder);
+var unsold = await db.Products
+    .Where(p => !p.OrderItems.Any())
+    .ToListAsync();
 
-Action<Order> printOrder = o => Console.WriteLine($"Zamówienie {o.Id} dla {o.Customer.Name} na kwotę: {o.TotalAmount:C}");
-vipOrders.ForEach(printOrder);
-
-Func<Order, object> summaryFunc = o => new { o.Id, Buyer = o.Customer.Name };
-var summaries = orders.Select(o => summaryFunc(o));
-
-Console.WriteLine("\nZADANIE 4");
-
-var cityGroup = from o in orders
-                join c in new List<Customer> { c1, c2, c3 } on o.Customer.Id equals c.Id
-                group o by c.City into g
-                select new { City = g.Key, Count = g.Count() };
-
-foreach (var g in cityGroup) Console.WriteLine($"Miasto: {g.City}, Liczba zamówień: {g.Count}");
-
-var allProducts = orders.SelectMany(o => o.Items).Select(i => i.Product.Name).Distinct();
-Console.WriteLine("Sprzedane produkty: " + string.Join(", ", allProducts));
-
-var customerSpendings = (from c in new List<Customer> { c1, c2, c3 }
-                         join o in orders on c.Id equals o.Customer.Id into userOrders
-                         select new { c.Name, Total = userOrders.Sum(x => x.TotalAmount) });
-
-foreach (var cs in customerSpendings) Console.WriteLine($"Klient: {cs.Name}, Łącznie wydał: {cs.Total:C}");
-
-Console.WriteLine("\nNaciśnij dowlny klawisz, aby zakończyć.");
-Console.ReadKey();
+Console.WriteLine("\n--- TEST TRANSAKCJI ---");
+await OrderProcessingService.ProcessOrderAsync(db, 1);
